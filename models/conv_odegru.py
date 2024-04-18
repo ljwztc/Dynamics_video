@@ -137,7 +137,7 @@ class VidODE(nn.Module):
         ##### ODE decoding
         first_point_enc = first_point_enc.squeeze(0)
         sol_y = self.diffeq_solver(first_point_enc, time_steps_to_predict)
-        self.tracker.write_info(key="sol_y", value=sol_y.clone().cpu())
+        # self.tracker.write_info(key="sol_y", value=sol_y.clone().cpu())
         
         ##### Conv decoding
         sol_y = sol_y.contiguous().view(b, pred_t_len, -1, h // resize, w // resize)
