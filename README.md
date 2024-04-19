@@ -8,6 +8,8 @@ conda install pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvi
 pip install -i https://pypi.tuna.tsinghua.edu.cn/simple opencv-python
 conda install scikit-image
 conda install pandas
+conda install tqdm
+conda install tensorboard
 ```
 
 ## Preliminary

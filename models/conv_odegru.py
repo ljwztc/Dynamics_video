@@ -3,25 +3,8 @@ import torch.nn as nn
 
 from models.base_conv_gru import *
 from models.ode_func import ODEFunc, DiffeqSolver
+from models.layers import create_convnet
 
-def create_convnet(n_inputs, n_outputs, n_layers=1, n_units=128, nonlinear='tanh'):
-    
-    if nonlinear == 'tanh':
-        nonlinear = nn.Tanh()
-    else:
-        raise NotImplementedError('There is no named')
-    
-    layers = []
-    layers.append(nn.Conv2d(n_inputs, n_units, 3, 1, 1, dilation=1))
-    
-    for i in range(n_layers):
-        layers.append(nonlinear)
-        layers.append(nn.Conv2d(n_units, n_units, 3, 1, 1, dilation=1))
-    
-    layers.append(nonlinear)
-    layers.append(nn.Conv2d(n_units, n_outputs, 3, 1, 1, dilation=1))
-    
-    return nn.Sequential(*layers)
 
 class VidODE(nn.Module):
     
@@ -137,7 +120,7 @@ class VidODE(nn.Module):
         ##### ODE decoding
         first_point_enc = first_point_enc.squeeze(0)
         sol_y = self.diffeq_solver(first_point_enc, time_steps_to_predict)
-        # self.tracker.write_info(key="sol_y", value=sol_y.clone().cpu())
+        self.tracker.write_info(key="sol_y", value=sol_y.clone().cpu())
         
         ##### Conv decoding
         sol_y = sol_y.contiguous().view(b, pred_t_len, -1, h // resize, w // resize)

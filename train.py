@@ -12,8 +12,11 @@ import numpy as np
 # from dataloader import parse_datasets
 from models.conv_odegru import *
 import utils
-from dataset.echo_dynamic import Echo_video, Echo_seg
+from dataset.echo_dynamic import Echo_dynamic
 from torch.utils.data import DataLoader
+
+from tqdm import tqdm
+from torch.utils.tensorboard import SummaryWriter
 
 
 def get_opt():
@@ -22,7 +25,7 @@ def get_opt():
     parser.add_argument("--name", default="video_dynamics", help='Specify experiment')
     parser.add_argument('-j', '--workers', type=int, default=4)
     parser.add_argument('-b', '--batch_size', type=int, default=8)
-    parser.add_argument('--epoch', type=int, default=500, help='epoch')
+    parser.add_argument('--epoch', type=int, default=200, help='epoch')
     parser.add_argument('--phase', default="train", choices=["train", "test"])
     
     # Hyper-parameters
@@ -40,9 +43,7 @@ def get_opt():
     parser.add_argument('--n_downs', type=int, default=2)
     parser.add_argument('--init_dim', type=int, default=32)
     parser.add_argument('--input_norm', action='store_true', default=False)
-    
     parser.add_argument('--run_backwards', action='store_true', default=True)
-    parser.add_argument('--irregular', action='store_true', default=False, help="Train with irregular time-steps")
     
     # Log
     parser.add_argument("--ckpt_save_freq", type=int, default=5000)
@@ -50,14 +51,15 @@ def get_opt():
     parser.add_argument("--image_print_freq", type=int, default=1000)
     
     # Path (Data & Checkpoint & Tensorboard)
-    parser.add_argument('--dataset', type=str, default='kth', choices=["mgif", "hurricane", "kth", "penn"])
+    parser.add_argument('--dataset', type=str, default='echo', choices=["echo"])
     parser.add_argument('--log_dir', type=str, default='./logs', help='save tensorboard infos')
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints', help='save checkpoint infos')
     parser.add_argument('--test_dir', type=str, help='load saved model')
     
     opt = parser.parse_args()
 
-    opt.input_dim = 3
+    opt.input_dim = 1
+    opt.extrap = True
     
     if opt.phase == 'train':
         # Make Directory
@@ -69,7 +71,7 @@ def get_opt():
         # Modify Desc
         now = datetime.datetime.now()
         month_day = f"{now.month:02d}{now.day:02d}"
-        opt.name = f"dataset{opt.dataset}_irregular{opt.irregular}_runBack{opt.run_backwards}_{opt.name}"
+        opt.name = f"dataset{opt.dataset}_{opt.name}"
         opt.log_dir = utils.create_folder_ifnotexist(LOG_PATH / month_day / opt.name)
         opt.checkpoint_dir = utils.create_folder_ifnotexist(CKPT_PATH / month_day / opt.name)
 
@@ -107,21 +109,83 @@ def main():
     
     # Dataloader
     # loader_objs = parse_datasets(opt, device)
+    writer = SummaryWriter(log_dir=opt.log_dir)
     
     # Model
     model = VidODE(opt, device)
 
-    data_loader = Echo_video(root='/data/liujie/data/echocardiogram/EchoNet-Dynamic', split='ALL')
-    train_loader = DataLoader(data_loader, batch_size=1, shuffle=False, num_workers=1)
+    data_loader = Echo_dynamic(root='/data/liujie/data/echocardiogram/EchoNet-Dynamic', split='ALL')
+    train_loader = DataLoader(data_loader, batch_size=16, shuffle=True, num_workers=4)
 
-    for target in train_loader:
-        print(target.shape)
+    optimizer = optim.Adamax(model.parameters(), lr=opt.lr)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, opt.epoch)
 
-    train(opt, model, data_loader, device)
+    for epoch in range(opt.epoch):
+        train_loss = train(opt, model, optimizer, train_loader, epoch, writer)
+        scheduler.step()
 
 
-def train(opt, model, data_loader, device):
-    pass
+        # Save model
+        if (epoch) % 10 == 0:
+            checkpoint_path = os.path.join(opt.checkpoint_dir, f'model_{epoch + 1}.pth')
+            torch.save(model.state_dict(), checkpoint_path)
+
+        # Save images
+        if (epoch) % 10 == 0:
+            save_images(opt, pred, epoch + 1)
+
+
+def train(opt, model, optimizer, data_loader, epoch, writer):
+    model.train()
+    total_loss = 0.0
+    pbar = tqdm(total=len(data_loader), desc=f'Epoch {epoch + 1}/{opt.epoch}')
+
+    for i, (target, target_gt, fps, timestamps) in enumerate(data_loader):
+        batch_dicts = {"observed_data": None,
+                    "observed_tp": None,
+                    "data_to_predict": None,
+                    "tp_to_predict": None,
+                    "observed_mask": None,
+                    "mask_predicted_data": None
+                    }
+        b,c,t,w,h = target.shape
+        batch_dicts['observed_data'] = target[:,:,:t//2,:,:].transpose(1, 2)
+        batch_dicts['observed_tp'] = timestamps[0,:t//2]
+        batch_dicts['observed_mask'] = torch.ones((b, t // 2, 1))
+        batch_dicts['data_to_predict'] = target[:,:,t//2:,:,:].transpose(1, 2)
+        batch_dicts['tp_to_predict'] = timestamps[0,t//2:]
+        batch_dicts['mask_predicted_data'] = torch.ones((b, t // 2, 1))
+
+        res = model.compute_all_losses(batch_dicts)
+        loss = res["loss"]
+        pred = res["pred_y"]
+
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+        avg_loss = total_loss / (i + 1)
+
+        # Update progress bar
+        pbar.set_postfix(loss=avg_loss)
+        pbar.update(1)
+
+        # Log learning rate to TensorBoard
+        writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], epoch * len(data_loader) + i)
+    
+    pbar.close()
+    return avg_loss
+
+def save_images(opt, pred, epoch):
+    if not os.path.exists(opt.train_image_path):
+        os.makedirs(opt.train_image_path)
+
+    for i in range(pred.size(0)):
+        for j in range(pred.size(1)):
+            image = pred[i, j, 0, :, :].cpu().numpy()  # Assuming single-channel grayscale images
+            image_path = os.path.join(opt.train_image_path, f'{epoch}_{i}_{j}.png')
+            utils.save_image(image, image_path)
 
 
 def train_old(opt, netG, loader_objs, device):
