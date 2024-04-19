@@ -17,6 +17,7 @@ from torch.utils.data import DataLoader
 
 from tqdm import tqdm
 from torch.utils.tensorboard import SummaryWriter
+from PIL import Image
 
 
 def get_opt():
@@ -115,7 +116,7 @@ def main():
     model = VidODE(opt, device)
 
     data_loader = Echo_dynamic(root='/data/liujie/data/echocardiogram/EchoNet-Dynamic', split='ALL')
-    train_loader = DataLoader(data_loader, batch_size=16, shuffle=True, num_workers=4)
+    train_loader = DataLoader(data_loader, batch_size=4, shuffle=True, num_workers=4)
 
     optimizer = optim.Adamax(model.parameters(), lr=opt.lr)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, opt.epoch)
@@ -129,10 +130,6 @@ def main():
         if (epoch) % 10 == 0:
             checkpoint_path = os.path.join(opt.checkpoint_dir, f'model_{epoch + 1}.pth')
             torch.save(model.state_dict(), checkpoint_path)
-
-        # Save images
-        if (epoch) % 10 == 0:
-            save_images(opt, pred, epoch + 1)
 
 
 def train(opt, model, optimizer, data_loader, epoch, writer):
@@ -173,19 +170,21 @@ def train(opt, model, optimizer, data_loader, epoch, writer):
 
         # Log learning rate to TensorBoard
         writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], epoch * len(data_loader) + i)
+
+        # Save images
+    if (epoch) % 10 == 0:
+        save_images(opt, pred, epoch + 1)
     
     pbar.close()
     return avg_loss
 
 def save_images(opt, pred, epoch):
-    if not os.path.exists(opt.train_image_path):
-        os.makedirs(opt.train_image_path)
-
     for i in range(pred.size(0)):
         for j in range(pred.size(1)):
-            image = pred[i, j, 0, :, :].cpu().numpy()  # Assuming single-channel grayscale images
+            image = pred[i, j, 0, :, :].detach().cpu().numpy()  # Assuming single-channel grayscale images
             image_path = os.path.join(opt.train_image_path, f'{epoch}_{i}_{j}.png')
-            utils.save_image(image, image_path)
+            image_pil = Image.fromarray(np.uint8(image * 255))
+            image_pil.save(image_path)
 
 
 def train_old(opt, netG, loader_objs, device):
