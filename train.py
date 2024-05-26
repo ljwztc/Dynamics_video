@@ -53,6 +53,7 @@ def get_opt():
     
     # Path (Data & Checkpoint & Tensorboard)
     parser.add_argument('--dataset', type=str, default='echo', choices=["echo"])
+    parser.add_argument('--data_root', type=str, default='/home/jliu288/data/echocardiogram/EchoNet-Dynamic') #/data/liujie/data/echocardiogram/EchoNet-Dynamic
     parser.add_argument('--log_dir', type=str, default='./logs', help='save tensorboard infos')
     parser.add_argument('--checkpoint_dir', type=str, default='./checkpoints', help='save checkpoint infos')
     parser.add_argument('--test_dir', type=str, help='load saved model')
@@ -115,24 +116,30 @@ def main():
     # Model
     model = VidODE(opt, device)
 
-    data_loader = Echo_dynamic(root='/data/liujie/data/echocardiogram/EchoNet-Dynamic', split='ALL')
-    train_loader = DataLoader(data_loader, batch_size=4, shuffle=True, num_workers=4)
+    train_dataset = Echo_dynamic(root=opt.data_root, split='train')
+    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=4)
+
+    test_dataset = Echo_dynamic(root=opt.data_root, split='val')
+    test_loader = DataLoader(test_dataset, batch_size=4, shuffle=True, num_workers=4)
+
+    print('training length: {}, testing legth: {}'.format(len(train_dataset), len(test_dataset)))
 
     optimizer = optim.Adamax(model.parameters(), lr=opt.lr)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, opt.epoch)
 
     for epoch in range(opt.epoch):
-        train_loss = train(opt, model, optimizer, train_loader, epoch, writer)
+        train_loss = train(opt, model, optimizer, train_loader, epoch, writer, device)
         scheduler.step()
 
 
         # Save model
         if (epoch) % 10 == 0:
+            test(opt, model, test_loader, epoch, writer, device)
             checkpoint_path = os.path.join(opt.checkpoint_dir, f'model_{epoch + 1}.pth')
             torch.save(model.state_dict(), checkpoint_path)
 
 
-def train(opt, model, optimizer, data_loader, epoch, writer):
+def train(opt, model, optimizer, data_loader, epoch, writer, device):
     model.train()
     total_loss = 0.0
     pbar = tqdm(total=len(data_loader), desc=f'Epoch {epoch + 1}/{opt.epoch}')
@@ -170,13 +177,56 @@ def train(opt, model, optimizer, data_loader, epoch, writer):
 
         # Log learning rate to TensorBoard
         writer.add_scalar('learning_rate', optimizer.param_groups[0]['lr'], epoch * len(data_loader) + i)
+        # torch.cuda.memory_allocated(device=device)
+        torch.cuda.empty_cache()
 
         # Save images
-    if (epoch) % 10 == 0:
-        save_images(opt, pred, epoch + 1)
+    # if (epoch) % 10 == 0:
+    #     save_images(opt, pred, epoch + 1)
     
     pbar.close()
     return avg_loss
+
+def test(opt, model, data_loader, epoch, writer, device):
+    model.eval()
+    total_loss = 0.0
+    pbar = tqdm(total=len(data_loader), desc=f'Testing Phase')
+
+    with torch.no_grad():
+        for i, (target, target_gt, fps, timestamps) in enumerate(data_loader):
+            batch_dicts = {"observed_data": None,
+                        "observed_tp": None,
+                        "data_to_predict": None,
+                        "tp_to_predict": None,
+                        "observed_mask": None,
+                        "mask_predicted_data": None
+                        }
+            b,c,t,w,h = target.shape
+            batch_dicts['observed_data'] = target[:,:,:t//2,:,:].transpose(1, 2).to(device)
+            batch_dicts['observed_tp'] = timestamps[0,:t//2].to(device)
+            batch_dicts['observed_mask'] = torch.ones((b, t // 2, 1)).to(device)
+            batch_dicts['data_to_predict'] = target[:,:,t//2:,:,:].transpose(1, 2).to(device)
+            batch_dicts['tp_to_predict'] = timestamps[0,t//2:].to(device)
+            batch_dicts['mask_predicted_data'] = torch.ones((b, t // 2, 1)).to(device)
+
+            pred_x, _ = model.get_reconstruction(
+                    time_steps_to_predict=batch_dicts["tp_to_predict"],
+                    truth=batch_dicts["observed_data"],
+                    truth_time_steps=batch_dicts["observed_tp"],
+                    mask=batch_dicts["observed_mask"],
+                    out_mask=batch_dicts["mask_predicted_data"])
+            
+            val_loss = torch.mean(model.get_mse(truth=batch_dicts["data_to_predict"],
+                                       pred_x=pred_x,
+                                       mask=batch_dicts["mask_predicted_data"]))
+
+            total_loss += val_loss.item()
+            avg_loss = total_loss / (i + 1)
+
+            pbar.set_postfix(loss=avg_loss)
+            pbar.update(1)
+            
+        save_images(opt, pred_x, epoch + 1)
 
 def save_images(opt, pred, epoch):
     for i in range(pred.size(0)):

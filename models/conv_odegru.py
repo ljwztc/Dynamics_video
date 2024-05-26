@@ -258,15 +258,15 @@ class VidODE(nn.Module):
                                        pred_x=pred_x,
                                        mask=batch_dict["mask_predicted_data"]))
 
-        if not self.opt.extrap:
-            init_image = batch_dict["observed_data"][:, 0, ...]
-        else:
-            init_image = batch_dict["observed_data"][:, -1, ...]
+        # if not self.opt.extrap:
+        #     init_image = batch_dict["observed_data"][:, 0, ...]
+        # else:
+        #     init_image = batch_dict["observed_data"][:, -1, ...]
 
-        data = torch.cat([init_image.unsqueeze(1), batch_dict["data_to_predict"]], dim=1)
-        data_diff = self.get_diff(data=data, mask=batch_dict["mask_predicted_data"])
+        # data = torch.cat([init_image.unsqueeze(1), batch_dict["data_to_predict"]], dim=1)
+        # data_diff = self.get_diff(data=data, mask=batch_dict["mask_predicted_data"])
 
-        loss = loss + torch.mean(self.get_mse(truth=data_diff, pred_x=extra_info["pred_intermediates"], mask=None))
+        # loss = loss + torch.mean(self.get_mse(truth=data_diff, pred_x=extra_info["pred_intermediates"], mask=None))
 
         results = {}
         results["loss"] = torch.mean(loss)
